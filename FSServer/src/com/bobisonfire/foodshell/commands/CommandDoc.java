@@ -1,36 +1,37 @@
 package com.bobisonfire.foodshell.commands;
 
-import com.bobisonfire.foodshell.FileIOHelper;
+import com.bobisonfire.foodshell.DBExchanger;
 import com.bobisonfire.foodshell.ServerHelper;
 import com.bobisonfire.foodshell.ServerMain;
 import com.bobisonfire.foodshell.entity.*;
 import com.bobisonfire.foodshell.exc.*;
 import com.bobisonfire.foodshell.transformer.ObjectTransformer;
+import com.bobisonfire.foodshell.transformer.SQLObject;
 
 import java.io.*;
-import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
-import java.text.SimpleDateFormat;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.Instant;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Список команд для <i>FoodShell</i>.
- * Работа с <i>FoodShell</i>: пользователь является одним из персонажей внутренней вселенной.<br>
- * Изначально существует только персонаж God с безумными характеристиками и локация World, являющаяся корнем мира.<br>
+ * Работа с <i>FoodShell</i>: пользователь является одним из создателей персонажей внутренней вселенной.<br>
+ * Изначально существует только персонаж God и локация World, являющаяся корнем мира.<br>
  * Вселенную можно наполнять новыми локациями и новыми персонажами, персонажи взаимодействуют между собой и с локациями.<br>
- * Все данные, характеризующие состояние мира, находятся в CSV-таблицах.
+ * Все данные, характеризующие состояние мира, находятся в базе данных.<br>
+ * Пользователь может изменять своих персонажей как угодно, но доступа к персонажам других пользователей у него нет -
+ * он может только просматривать их.
  */
 public class CommandDoc {
-    private static ServerHelper s = ServerMain.server;
-    private static FileIOHelper f = new FileIOHelper();
     private SocketChannel socket;
-    private Map<String, String> map;
+    private int id;
 
     public CommandDoc(SelectionKey key) {
         socket = (SocketChannel) key.channel();
-        map = (Map<String, String>) key.attachment();
+        id = (Integer) key.attachment();
     }
 
     /**
@@ -38,8 +39,8 @@ public class CommandDoc {
      * <br>
      * Использование команды: exit
      */
-    public void exit() {
-        s.writeToChannel(socket, "FoodShell закрывается.");
+    void exit() {
+        ServerHelper.writeToChannel(socket, "FoodShell закрывается.");
     }
 
     /**
@@ -47,9 +48,9 @@ public class CommandDoc {
      * <br>
      * Использование команды: help
      */
-    public void help() {
-        s.writeToChannel(socket, "Используйте help command для получения описания определенной команды.");
-        Command.getMap().forEach( (k, v) -> s.writeToChannel(socket, k));
+    void help() {
+        ServerHelper.writeToChannel(socket, "Используйте help command для получения описания определенной команды.");
+        Command.getMap().forEach( (k, v) -> ServerHelper.writeToChannel(socket, k));
     }
 
     /**
@@ -59,8 +60,8 @@ public class CommandDoc {
      * @param command Название команды
      * @throws NotFoundException Послано, если такой команды не существует.
      */
-    public void help(String command) {
-        s.writeToChannel( socket, Command.getCommandByName(command).getDescription() );
+    void help(String command) {
+        ServerHelper.writeToChannel( socket, Command.getCommandByName(command).getDescription() );
     }
 
     /**
@@ -68,16 +69,16 @@ public class CommandDoc {
      * <br>
      * Использование команды: gender
      */
-    public void gender() {
-        s.writeToChannel(socket, "\t\t** There are only 15 genders. **");
+    void gender() {
+        ServerHelper.writeToChannel(socket, "\t\t** There are only 15 genders. **");
         for (Gender gender: Gender.values())
-            s.writeToChannel(socket, gender.ordinal() + ". " + gender.getName());
+            ServerHelper.writeToChannel(socket, gender.ordinal() + ". " + gender.getName());
     }
 
     /**
      * Создание нового персонажа или перезаписывание существующего с заданными характеристиками.<br>
-     * Все персонажи сохраняются в соответствующую коллекцию в формате CSV (путь к коллекции задается
-     * пользователем), доступ к информации о состоянии персонажей осуществляется командой show.<br>
+     * Все персонажи сохраняются в базу данных, доступ к информации о состоянии персонажей осуществляется
+     * командой show.<br>
      * <br>
      * Использование команды: insert name object
      * @param name Имя персонажа (уникальный ключ)
@@ -90,57 +91,49 @@ public class CommandDoc {
      *               Если поле не указано, ставится значение по умолчанию. Остальные поля игнорируются.
      * @throws TransformerException Послано, если object не является json-объектом.
      */
-    public void insert(String name, ObjectTransformer object) {
-        Set<ObjectTransformer> set = f.readCSVSetFromFile(Human.PATH);
-
+    void insert(String name, ObjectTransformer object) {
         object.put("name", name);
-        Human newHuman = new Human(object);
-        newHuman.setCreationDate(new Date());
+        Human human = new Human(object);
 
-        Set<Human> humanSet = new TreeSet<>();
-        set.forEach(elem -> humanSet.add( new Human(elem) ));
+        try (DBExchanger exchanger = new DBExchanger()) {
+            exchanger.update(
+                    "INSERT INTO humans (creator_id, name, birthday, gender, location) " +
+                    String.format( "VALUES (%d,'%s','%s',%d,'%s')",
+                            id, human.getName(), human.getBirthday("yyyy-MM-dd"),
+                            human.getGender().ordinal(), human.getLocation()
+                    ) +
+                    "ON CONFLICT ON CONSTRAINT humans_creator_id_name_key DO UPDATE SET " +
+                        "birthday=EXCLUDED.birthday, gender=EXCLUDED.gender," +
+                        "location=EXCLUDED.location, creation_date=current_timestamp;");
+        }
 
-        Set<Human> humanSetC = humanSet
-                .stream()
-                .filter(elem -> !elem.equals(newHuman))
-                .collect(Collectors.toSet());
-
-        humanSetC.add(newHuman);
-        humanSetC = new TreeSet<>(humanSetC);
-
-        f.writeCSVSetIntoFile(humanSetC, Human.PATH);
-        System.out.println(map.get("name") + " добавил персонажа в коллекцию: " +
-                newHuman.toString() );
+        System.out.println("User#" + id + " добавил персонажа в коллекцию: " + human.toString() );
     }
 
     /**
      * Создание новой локации или перезаписывание текущей с заданными характеристиками.<br>
-     * Все локации сохраняются в соответствующую коллекцию в формате CSV, доступ к ней осуществляется
-     * командой locations.<br>
+     * Все локации сохраняются в базу данных, доступ к ней осуществляется командой locations.<br>
      * <br>
      * Использование команды: location name x y z
      * @param name - название локации (уникальный ключ)
      * @param coords - координаты локации (три числа с плавающей точкой)
      */
-    public void location(String name, Coordinate coords) {
-        Set<ObjectTransformer> set = f.readCSVSetFromFile(Location.PATH);
+    void location(String name, Coordinate coords) {
+        Location location = new Location(name, coords);
+        Coordinate coordinate = location.getCoords();
 
-        Location newLoc = new Location(name, coords);
+        try (DBExchanger exchanger = new DBExchanger()) {
+            exchanger.update(
+                    "INSERT INTO locations (name, x, y, z) " +
+                            String.format( Locale.US, "VALUES ('%s',%.3f,%.3f,%.3f)",
+                                    location.getName(), coordinate.getX(),
+                                    coordinate.getY(), coordinate.getZ()
+                            ) +
+                            "ON CONFLICT ON CONSTRAINT locations_pkey DO UPDATE SET " +
+                            "x=EXCLUDED.x, y=EXCLUDED.y, z=EXCLUDED.z;");
+        }
 
-        Set<Location> locationSet = new TreeSet<>();
-        set.forEach(elem -> locationSet.add( new Location(elem) ));
-
-        Set<Location> locationSetC = locationSet
-                .stream()
-                .filter(elem -> !elem.equals(newLoc))
-                .collect(Collectors.toSet());
-
-        locationSetC.add(newLoc);
-        locationSetC = new TreeSet<>(locationSet);
-
-        f.writeCSVSetIntoFile(locationSetC, Location.PATH);
-        System.out.println(map.get("name") + " добавил локацию в коллекцию " +
-                Location.PATH + ": " + newLoc.toCSV() );
+        System.out.println("User#" + id + " добавил локацию в коллекцию: " + location.toString() );
     }
 
     /**
@@ -148,78 +141,97 @@ public class CommandDoc {
      * <br>
      * Использование команды: locations
      */
-    public void locations() {
-        f.readCSVSetFromFile(Location.PATH)
-                .forEach(elem -> s.writeToChannel( socket, new Location(elem).toString() ));
+    void locations() {
+        try (DBExchanger exchanger = new DBExchanger()) {
+            ResultSet locationSet = exchanger.getQuery("SELECT * FROM locations ORDER BY name;");
+            while (locationSet.next()) {
+                Location location = new Location(locationSet);
+                ServerHelper.writeToChannel(socket, location.toString());
+            }
+        } catch (SQLException exc) {
+            System.out.println("Произошла ошибка доступа к базе данных.");
+            ServerMain.logException(exc);
+        }
     }
 
     /**
-     * Просмотр списка имен и характеристик существующих персонажей.<br>
+     * Просмотр списка имен и характеристик всех существующих персонажей.<br>
      * <br>
      * Использование команды: show
      */
-    public void show() {
-        Set<Human> humanSet = new TreeSet<>();
-
-        f.readCSVSetFromFile( Human.PATH )
-                .forEach(elem -> humanSet.add( new Human(elem) ));
-
-        humanSet.forEach(elem -> s.writeToChannel( socket, elem.toString() ));
+    void show() {
+        try (DBExchanger exchanger = new DBExchanger()) {
+            ResultSet humanSet = exchanger.getQuery("SELECT * FROM humans ORDER BY birthday;");
+            while (humanSet.next()) {
+                Human human = new Human(new SQLObject( humanSet ));
+                ServerHelper.writeToChannel(socket, human.toString());
+            }
+        } catch (SQLException exc) {
+            System.out.println("Произошла ошибка доступа к базе данных.");
+            ServerMain.logException(exc);
+        }
     }
 
     /**
-     * Просмотр данных о текущем пользователе, а именно: гендер, имя персонажа, его возраст (в годах),
-     * его местоположение, точные координаты и дата создания объекта, описывающего персонажа.<br>
+     * Просмотр списка имен и характеристик персонажей, созданных конкретным пользователем.<br>
+     * <br>
+     * Использование команды: show creator_id
+     * @param creatorId id пользователя (уникальный ключ)
+     */
+    void show(int creatorId) {
+        try (DBExchanger exchanger = new DBExchanger()) {
+            ResultSet humanSet = exchanger.getQuery("SELECT * FROM humans WHERE creator_id=? ORDER BY birthday;", creatorId);
+            while (humanSet.next()) {
+                Human human = new Human(new SQLObject( humanSet ));
+                ServerHelper.writeToChannel(socket, human.toString());
+            }
+        } catch (SQLException exc) {
+            System.out.println("Произошла ошибка доступа к базе данных.");
+            ServerMain.logException(exc);
+        }
+    }
+
+    /**
+     * Просмотр данных о текущем пользователе, а именно: id, имя, email и время последней авторизации.<br>
      * <br>
      * Использование команды: me
      */
-    public void me() {
-        Human me = Human.getHumanByName(map.get("logUser"), Human.PATH);
-        Coordinate coordinate = me.getLocation().getCoords();
-
-        s.writeToChannel(socket, String.format( Locale.US,
-
-        "%s %s, %d лет.\n" +
-                "Местоположение - %s, точные координаты - %s.\n" +
-                "Дата создания - %s.",
-
-                me.getGender().getName(), me.getName(), me.getAge(),
-                me.getLocation().getName(), coordinate,
-                me.getCreationDate()
-        ) );
+    void me() {
+        try (DBExchanger exchanger = new DBExchanger()) {
+            ResultSet set = exchanger.getQuery("SELECT * FROM users WHERE id=?;", id);
+            set.next();
+            ServerHelper.writeToChannel(socket,
+                    "User#" + id + ": имя - " + set.getString("name") + "\n" +
+                    "Email: " + set.getString("email") + "\n" +
+                    "Время последней авторизации: " + set.getTimestamp("last_authorize")
+            );
+        } catch (SQLException exc) {
+            System.out.println("Произошла ошибка доступа к базе данных.");
+            ServerMain.logException(exc);
+        }
     }
 
     /**
-     * Залогиниться за другого пользователя-персонажа.<br>
+     * Переместить заданного персонажа в заданную локацию.<br>
      * <br>
-     * Использование команды: login name
-     * @param name Имя персонажа (уникальный ключ).
-     */
-    public void login(String name) {
-        Human.getHumanByName(name, Human.PATH);
-        String previous = map.put("logUser", name);
-        System.out.println(map.get("name") + " сменил персонажа: " + previous + " -> " + name);
-    }
-
-    /**
-     * Переместить текущего пользователя-персонажа в заданную локацию.<br>
-     * <br>
-     * Использование команды: move location
+     * Использование команды: move human location
+     * @param human Имя персонажа (уникальный ключ).
      * @param location Название локации (уникальный ключ).
      */
-    public void move(String location) {
-        Location loc = Location.getLocationByName(location);
+    void move(String human, String location) {
+        String destination = Location.getLocationByName(location);
 
-        Set<Human> humanSet = new TreeSet<>();
-        f.readCSVSetFromFile(Human.PATH).forEach(elem -> {
-            Human human = new Human(elem);
-            if ( human.getName().equals(map.get("logUser")) )
-                human.setLocation(loc);
-            humanSet.add(human);
-        });
-
-        f.writeCSVSetIntoFile(humanSet, Human.PATH);
-        System.out.println(map.get("name") + " переместил персонажа " + map.get("logUser") + " в " + location);
+        int rowsChanged;
+        try (DBExchanger exchanger = new DBExchanger()) {
+            rowsChanged = exchanger.update(
+                    "UPDATE humans SET location=? WHERE creator_id=? AND name LIKE ?;",
+                    destination, id, human
+            );
+        }
+        if (rowsChanged > 0)
+            System.out.println("User#" + id + " переместил персонажа " + human + " в " + location);
+        else
+            ServerHelper.writeToChannel(socket, "Перемещения не произошло: либо персонажа, либо локации не существует");
     }
 
     /**
@@ -229,80 +241,72 @@ public class CommandDoc {
      * Использование команды: remove name
      * @param name Имя персонажа (уникальный ключ).
      */
-    public void remove(String name) {
+    void remove(String name) {
         if (name.equals("God")) {
-            s.writeToChannel(socket, "God невозможно уничтожить (по крайней мере, тебе)");
+            ServerHelper.writeToChannel(socket, "God невозможно уничтожить (по крайней мере, тебе)");
             return;
         }
-        Set<Human> humanSet = new TreeSet<>();
-        Set<ObjectTransformer> set = f.readCSVSetFromFile(Human.PATH);
 
-        set.stream()
-                .filter(elem -> !elem.getString("name").equals(name))
-                .forEach(elem -> humanSet.add( new Human(elem) ));
-
-        if (set.size() == humanSet.size()) {
-            s.writeToChannel(socket, "Персонаж не уничтожен: его не существует!");
-        } else {
-            f.writeCSVSetIntoFile(humanSet, Human.PATH);
-            System.out.println(map.get("name") + " уничтожил персонажа " + name);
+        int rowsChanged;
+        try (DBExchanger exchanger = new DBExchanger()) {
+            rowsChanged = exchanger.update(
+                    "DELETE FROM humans WHERE creator_id=? AND name=?;",
+                    id, name
+            );
         }
+
+        if (rowsChanged > 0)
+            System.out.println("User#" + id + " уничтожил персонажа " + name);
+        else
+            ServerHelper.writeToChannel(socket, "Удаления не произошло: персонажа не существует.");
     }
 
     /**
-     * Уничтожение всех персонажей (кроме God), которые старше данного персонажа.<br>
+     * Уничтожение всех персонажей (кроме God), созданных текущим пользователем,
+     * которые старше данного персонажа.<br>
      * <br>
      * Использование команды: remove_older object
      * @param object json-объект, описывающий персонажа (см. insert), относительно которого
      *               производится уничтожение персонажей.
      * @throws TransformerException Послано, если object не является json-объектом.
      */
-    public void remove_older(ObjectTransformer object) {
-        Set<Human> set = new TreeSet<>();
+    void remove_older(ObjectTransformer object) {
         Human compare = new Human(object);
 
-        f.readCSVSetFromFile(Human.PATH)
-                .forEach(elem -> set.add( new Human(elem) ));
+        int rowsChanged;
+        try (DBExchanger exchanger = new DBExchanger()) {
+            rowsChanged = exchanger.update(
+                    "DELETE FROM humans WHERE creator_id=? AND date ? - birthday > 0;",
+                    id, compare.getBirthday("yyyy-MM-dd")
+            );
+        }
 
-        Set<Human> humanSet = set
-                .stream()
-                .filter(elem -> elem.equals( new Human() ) || elem.compareTo(compare) > 0)
-                .collect(Collectors.toSet());
-
-        humanSet = new TreeSet<>(humanSet);
-
-        f.writeCSVSetIntoFile(humanSet, Human.PATH);
-        System.out.println(map.get("name") + " уничтожил персонажей, родившихся раньше чем " +
-                compare.getBirthday() + ". Уничтожено персонажей: " + ( set.size() - humanSet.size() ) +
-                ". Размер коллекции: " + humanSet.size() );
+        System.out.println("User#" + id + " уничтожил персонажей, родившихся раньше чем " +
+                compare.getBirthday() + "\nУничтожено персонажей: " + rowsChanged);
     }
 
     /**
-     * Уничтожение всех персонажей (кроме God), которые младше данного персонажа.<br>
+     * Уничтожение всех персонажей (кроме God), созданных текущим пользователем,
+     * которые младше данного персонажа.<br>
      * <br>
      * Использование команды: remove_younger object
      * @param object json-объект, описывающий персонажа (см. insert), относительно которого
      *               производится уничтожение персонажей.
      * @throws TransformerException Послано, если object не является json-объектом.
      */
-    public void remove_younger(ObjectTransformer object) {
-        Set<Human> set = new TreeSet<>();
+    void remove_younger(ObjectTransformer object) {
         Human compare = new Human(object);
 
-        f.readCSVSetFromFile(Human.PATH)
-                .forEach(elem -> set.add( new Human(elem) ));
+        int rowsChanged;
+        try (DBExchanger exchanger = new DBExchanger()) {
+            rowsChanged = exchanger.update(
+                    "DELETE FROM humans WHERE creator_id=? AND date ? - birthday < 0;",
+                    id, compare.getBirthday("yyyy-MM-dd")
+            );
+        }
 
-        Set<Human> humanSet = set
-                .stream()
-                .filter(elem -> elem.equals( new Human() ) || elem.compareTo(compare) < 0)
-                .collect(Collectors.toSet());
-
-        humanSet = new TreeSet<>(humanSet);
-
-        f.writeCSVSetIntoFile(humanSet, Human.PATH);
-        System.out.println(map.get("name") + " уничтожил персонажей, родившихся позже чем " +
-                compare.getBirthday() + ". Уничтожено персонажей: " + ( set.size() - humanSet.size() ) +
-                ". Размер коллекции: " + humanSet.size() );
+        System.out.println("User#" + id + " уничтожил персонажей, родившихся позже чем " +
+                compare.getBirthday() + "\nУничтожено персонажей: " + rowsChanged);
     }
 
     /**
@@ -311,12 +315,11 @@ public class CommandDoc {
      * <br>
      * Использование команды: clear
      */
-    public void clear() {
-        Set<Human> humanSet = new TreeSet<>();
-        humanSet.add(new Human());
-
-        f.writeCSVSetIntoFile(humanSet, Human.PATH);
-        System.out.println(map.get("name") + " очистил коллекцию персонажей.");
+    void clear() {
+        try (DBExchanger exchanger = new DBExchanger()) {
+            exchanger.update("DELETE FROM humans WHERE creator_id=?;", id);
+        }
+        System.out.println("User#" + id + " очистил свою коллекцию персонажей.");
     }
 
     /**
@@ -325,127 +328,52 @@ public class CommandDoc {
      * <br>
      * Использование команды: info
      */
-    public void info() {
-        Set<ObjectTransformer> set = f.readCSVSetFromFile(Human.PATH);
-        Optional<ObjectTransformer> opt = set.stream().filter(elem -> elem.getString("name").equals("God")).findFirst();
+    void info() {
+        try (DBExchanger exchanger = new DBExchanger()) {
+            ResultSet set = exchanger.getQuery("SELECT COUNT(*) FROM humans;");
+            set.next();
+            int totalElements = set.getInt(1);
+            set.close();
 
-        Date creationDate;
-        if (opt.isPresent())
-            creationDate = opt.get().getDate("creationDate", "dd.MM.yyyy HH:mm:ss");
-        else
-            creationDate = new Date();
+            set = exchanger.getQuery("SELECT COUNT(*) FROM humans WHERE creator_id=?;", id);
+            set.next();
+            int currentUserElements = set.getInt(1);
+            set.close();
 
+            set = exchanger.getQuery("SELECT MIN(creation_date) FROM humans WHERE creator_id=?;", id);
+            Instant creationTime;
+            if (set.next())
+                creationTime = set.getTimestamp(1).toInstant();
+            else
+                creationTime = Instant.now();
+            set.close();
 
-        int mapSize = set.size();
-        SimpleDateFormat sdf = new SimpleDateFormat("dd.MM.yyyy HH:mm:ss");
-        s.writeToChannel(socket, "Тип коллекции: " + new TreeSet<Human>().getClass().getCanonicalName() + ".\n" +
-                "Размер коллекции: " + mapSize + ", дата создания - " + sdf.format(creationDate) );
-    }
-
-    /**
-     * Загрузить коллекцию на сервер. Данные из коллекции сохраняются в путь по умолчанию или в путь,
-     * указанный при создании сервера.<br>
-     * <br>
-     * Использование команды: export path
-     */
-    public void export() {
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(Human.PATH, false))) {
-            while ( true ) {
-                String str = s.readFromChannel(socket);
-                if (str.contains("!endexport")) {
-                    str = str.substring(0, str.indexOf("!endexport"));
-                    writer.write(str);
-                    break;
-                }
-
-                writer.write(str);
-            }
-
-            System.out.println(map.get("name") + " загрузил свою коллекцию на сервер.");
-        } catch (IOException e) {
-            s.writeToChannel(socket, "Невозможно записать в файл " + Human.PATH);
+            ServerHelper.writeToChannel(socket,
+                    "Коллекция персонажей, хранится в базе PostgreSQL.\n" +
+                    "Всего элементов - " + totalElements + ", для текущего пользователя - " + currentUserElements + ".\n" +
+                    "Дата создания коллекции данным пользователем: " + creationTime.toString()
+            );
+        } catch (SQLException exc) {
+            ServerMain.logException(exc);
         }
     }
 
     /**
-     * Сохранить коллекцию в файл на клиенте. Данные для сохранения берутся из файла по умолчанию или файла,
-     * указанного при создании сервера.<br>
-     * <br>
-     * Использование команды: import path
-     */
-    public void _import(String path) {
-        try (Scanner scanner = new Scanner(new FileReader(Human.PATH))) {
-            s.writeToChannel(socket, "!import " + path);
-            while (scanner.hasNextLine())
-                s.writeToChannel(socket, scanner.nextLine() );
-            s.writeToChannel(socket, "!endimport");
-
-            System.out.println(map.get("name") + " импортировал свою коллекцию с сервера.");
-        } catch (IOException e) {
-            s.writeToChannel(socket,"Невозможно прочитать файл " + Human.PATH);
-        }
-    }
-
-    /**
-     * Сохранить коллекцию в файл на сервере. Данные для сохранения берутся из файла по умолчанию или файла,
-     * указанного при создании сервера.<br>
-     * <br>
-     * Использование команды: save path
-     */
-    public void save(String path) {
-        try {
-            Scanner scanner = new Scanner(new FileReader(Human.PATH));
-            BufferedWriter writer = new BufferedWriter(new FileWriter(path, false));
-
-            while (scanner.hasNextLine())
-                writer.write(scanner.nextLine() + "\n");
-
-            scanner.close();
-            writer.close();
-            System.out.println(map.get("name") + " сохранил коллекцию в " + path + ".");
-        } catch (IOException exc) {
-            s.writeToChannel(socket, "Произошла ошибка при чтении или записи файла.");
-        }
-    }
-
-    /**
-     * Загрузить коллекцию из файла на сервере. Данные из коллекции сохраняются в путь по умолчанию или в путь,
-     * указанный при создании сервера.<br>
-     * <br>
-     * Использование команды: load path
-     */
-    public void load(String path) {
-        try {
-            Scanner scanner = new Scanner(new FileReader(path));
-            BufferedWriter writer = new BufferedWriter(new FileWriter(Human.PATH, false));
-
-            while (scanner.hasNextLine())
-                writer.write(scanner.nextLine() + "\n");
-
-            scanner.close();
-            writer.close();
-            System.out.println(map.get("name") + " загрузил коллекцию из " + path + ".");
-        } catch (IOException exc) {
-            s.writeToChannel(socket, "Произошла ошибка при чтении или записи файла.");
-        }
-    }
-
-    /**
-     * Последовательно выводит содержимое файлов. Существует для отладки или чтения файлов коллекций.<br>
+     * Последовательно вывести содержимое файлов. Существует для отладки или чтения файлов коллекций.<br>
      * <br>
      * Использование команды: cat file1 [file2 ...]
      * @param files файлы, которые необходимо прочитать.
      */
-    public void cat(String... files) {
+    void cat(String... files) {
         try {
             for (String file: files) {
                 Scanner scanner = new Scanner(new FileReader(file));
                 while (scanner.hasNextLine())
-                    s.writeToChannel(socket, scanner.nextLine());
+                    ServerHelper.writeToChannel(socket, scanner.nextLine());
                 scanner.close();
             }
         } catch (IOException e) {
-            s.writeToChannel(socket, "Произошла ошибка при чтении файла.");
+            ServerHelper.writeToChannel(socket, "Произошла ошибка при чтении файла.");
         }
     }
 }

@@ -2,12 +2,9 @@ package com.bobisonfire.foodshell;
 
 import com.bobisonfire.foodshell.commands.Command;
 import com.bobisonfire.foodshell.commands.CommandDoc;
-import com.bobisonfire.foodshell.entity.Human;
-import com.bobisonfire.foodshell.entity.Location;
 import com.bobisonfire.foodshell.exc.NotFoundException;
 import com.bobisonfire.foodshell.exc.TransformerException;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -25,12 +22,11 @@ import java.util.*;
 public class ServerHelper {
     private ServerSocketChannel serverChannel;
     private Selector selector;
-    private final FileIOHelper f = new FileIOHelper();
 
     /**
      * Создание сервера и вывод его адреса, обработка критических ошибок.
      */
-    public ServerHelper() {
+    ServerHelper() {
 
         try {
             serverChannel = ServerSocketChannel.open();
@@ -40,8 +36,7 @@ public class ServerHelper {
             selector = Selector.open();
             serverChannel.register(selector, SelectionKey.OP_ACCEPT);
             System.out.println("Сервер доступен по адресу " + InetAddress.getLocalHost() + ":" +
-                    serverChannel.socket().getLocalPort() + ".\nИспользует коллекцию персонажей по умолчанию: " +
-                    Human.PATH + "\n");
+                    serverChannel.socket().getLocalPort() + ".\n");
 
         } catch(Exception e) {
             System.err.println("Что-то не так с сервером. Закрываюсь...");
@@ -52,7 +47,7 @@ public class ServerHelper {
     /**
      * Организация работы сервера: итерация по селектору в поиске новых каналов и чтении существующих.
      */
-    public void runServer() {
+    void runServer() {
         try {
             Iterator<SelectionKey> iter;
             SelectionKey key;
@@ -73,40 +68,56 @@ public class ServerHelper {
     }
 
     /**
-     * Обработка нового соединения: сохранение имени пользователя и пути к его коллекции с персонажами,
-     * вывод приветственного сообщения и передача в селектор соединения для чтения.
-     * @param key ключ соединения
+     * Обработка нового соединения: регистрация/авторизация пользователей и сохранение в селектор
+     * этого соединения для последующего чтения.
+     * @param key ключ соединения в селекторе
      */
     private void handleAccept(SelectionKey key) throws IOException {
         SocketChannel socket = ( (ServerSocketChannel) key.channel() ).accept();
 
-        String name = readFromChannel(socket).trim();
-
-        Map<String, String> map = new HashMap<>();
-        map.put("name", name);
-        map.put("logUser", "God");
-
-        socket.configureBlocking(false);
-        socket.register(selector, SelectionKey.OP_READ, map);
-
-        System.out.println(name + " вошел.");
         writeToChannel(socket, initializeMessageClient());
+        String response;
+        try {
+            response = readFromChannel(socket).trim();
+        } catch (NullPointerException exc) {
+            writeToChannel(socket, "\0"); // todo check if it is necessary
+            socket.close();
+            return;
+        }
+
+        Integer id;
+        if (response.equals("y")) {
+            id = AuthorizeBuilder.authorizeInstance().apply(socket);
+        } else {
+            id = AuthorizeBuilder.registerInstance().apply(socket);
+        }
+
+        if (id == null) {
+            writeToChannel(socket, "\0");
+            socket.close();
+            return;
+        }
+        socket.configureBlocking(false);
+        socket.register(selector, SelectionKey.OP_READ, id);
+
+        System.out.println("User#" + id + " вошел.");
+        writeToChannel(socket, "Введите help для списка всех команд.");
     }
 
     /**
      * Обработка получаемого сообщения - команды или сигнала выхода. Если пользователь выходит, закрывает
      * его соединение. Если пользователь отправил команду, передает соединение обработчику команд <i>FoodShell</i>.
-     * @param key
-     * @throws IOException
+     * @param key ключ соединения в селекторе
      */
     private void handleRead(SelectionKey key) throws IOException {
         SocketChannel socket = (SocketChannel) key.channel();
-        String message = readFromChannel(socket);
+        Integer id = (Integer) key.attachment();
 
-        Map<String, String> map = (Map<String, String>) key.attachment();
-
-        if (message == null) {
-            System.out.println(map.get("name") + " вышел.");
+        String message;
+        try {
+            message = readFromChannel(socket);
+        } catch (NullPointerException exc) {
+            System.out.println("User#" + id + " вышел.");
             socket.socket().close();
             return;
         }
@@ -168,39 +179,27 @@ public class ServerHelper {
     }
 
     private String initializeMessageClient() {
-        return "FoodShell v" + ServerMain.VERSION + ". Some rights reserved.\n" +
-               "Введите help для списка всех команд.\n";
+        return "FoodShell v" + ServerMain.VERSION + ". Some rights reserved.\n\nЕсть аккаунт? y/n";
     }
 
     /**
      * Организовывает чтение строки из канала.
      */
-    public String readFromChannel(SocketChannel socket) {
-        StringBuilder sb = new StringBuilder();
+    static String readFromChannel(SocketChannel socket) throws IOException {
+        ByteBuffer buffer = ByteBuffer.allocate(256);
+        if (socket.read(buffer) < 0)
+            throw new NullPointerException();
 
-        ByteBuffer readBuffer = ByteBuffer.allocate(256);
-        int read;
-        try {
-            read = socket.read(readBuffer);
-            readBuffer.flip();
-            byte[] bytes = new byte[readBuffer.limit()];
-            readBuffer.get(bytes);
-            sb.append(new String(bytes));
-            readBuffer.clear();
-        } catch (IOException exc) {
-            read = -1;
-        }
-
-        if (read >= 0)
-            return sb.toString();
-
-        return null;
+        buffer.flip();
+        byte[] bytes = new byte[buffer.limit()];
+        buffer.get(bytes);
+        return new String(bytes).trim();
     }
 
     /**
      * Организовывает запись строки в канал.
      */
-    public void writeToChannel(SocketChannel socket, String message) {
+    public static void writeToChannel(SocketChannel socket, String message) {
         String msg = message + "\n";
         ByteBuffer writeBuffer = ByteBuffer.wrap(msg.getBytes());
 

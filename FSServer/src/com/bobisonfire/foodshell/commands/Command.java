@@ -10,24 +10,18 @@ import java.util.TreeMap;
  * Класс, реализующий логику исполняемых команд.<br>
  */
 public class Command {
-    private String name;
     private String description;
     private Launchable function;
     private static TreeMap<String, Command> CommandMap = new TreeMap<>();
 
-    public Command(String name, String description, Launchable function) {
-        this.name = name;
+    private Command(String name, String description, Launchable function) {
         this.description = description;
         this.function = function;
 
         CommandMap.put(name, this);
     }
 
-    public String getName() {
-        return name;
-    }
-
-    public String getDescription() {
+    String getDescription() {
         return description;
     }
 
@@ -37,7 +31,7 @@ public class Command {
         return CommandMap.get(name.intern());
     }
 
-    public static TreeMap<String, Command> getMap() {
+    static TreeMap<String, Command> getMap() {
         return CommandMap;
     }
 
@@ -106,8 +100,12 @@ public class Command {
 
         new Command(
                 "show",
-                "show - список имен и характеристик существующих персонажей.\n",
-                (launcher, tokens) -> launcher.show()
+                "show [user_id] - список имен и характеристик всех персонажей или персонажей, созданных пользователем с user_id.\n",
+                (launcher, tokens) -> {
+                    if (tokens.length == 0)
+                        launcher.show();
+                    else launcher.show( Integer.parseInt(tokens[0]) );
+                }
         );
 
         new Command(
@@ -117,15 +115,9 @@ public class Command {
         );
 
         new Command(
-                "login",
-                "login name - войти как другой пользователь name.",
-                (launcher, tokens) -> launcher.login(tokens[0])
-        );
-
-        new Command(
                 "move",
-                "move location - переместиться в локацию location.",
-                (launcher, tokens) -> launcher.move(tokens[0])
+                "move human location - переместить персонажа human в локацию location.",
+                (launcher, tokens) -> launcher.move(tokens[0], tokens[1])
         );
 
         new Command(
@@ -156,30 +148,6 @@ public class Command {
                 "info",
                 "info - получить информацию о текущей коллекции.",
                 (launcher, tokens) -> launcher.info()
-        );
-
-        new Command(
-                "export",
-                "export path - загрузить коллекцию из файла path, находящегося на клиенте, на сервер.",
-                (launcher, tokens) -> launcher.export()
-        );
-
-        new Command(
-                "import",
-                "import path - загрузить коллекцию с сервера в файл path, находящийся на клиенте.",
-                (launcher, tokens) -> launcher._import(tokens[0])
-        );
-
-        new Command(
-                "load",
-                "load path - загрузить коллекцию из файла path, находящегося на сервере, на сервер.",
-                (launcher, tokens) -> launcher.load(tokens[0])
-        );
-
-        new Command(
-                "save",
-                "save path - загрузить коллекцию с сервера в файл path, находящийся на сервере.",
-                (launcher, tokens) -> launcher.save(tokens[0])
         );
 
         new Command(

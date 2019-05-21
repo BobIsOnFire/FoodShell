@@ -1,15 +1,11 @@
 package com.bobisonfire.foodshell;
 
 import com.bobisonfire.foodshell.commands.Command;
-import com.bobisonfire.foodshell.entity.Human;
-import com.bobisonfire.foodshell.entity.Location;
 
 import java.io.BufferedWriter;
-import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
-import java.util.Collections;
 import java.util.Date;
 
 /**
@@ -19,49 +15,29 @@ import java.util.Date;
  * удалять и перемещать в пространстве. Перемещение осуществляется закреплением
  * персонажа к определенной локации. Изначально существуют персонаж God и локация World.<br>
  * Структура <i>FoodShell</i>:<br>
- * 1. com.bobisonfire.foodshell - организовывает работу приложения с внешними ресурсами:
- * файлами с CSV-таблицами и клиентской частью приложения;<br>
- * 2. com.bobisonfire.foodshell.entity - хранит классы, необходимые для создания сериализуемых
- * объектов: интерфейс и классы самих объектов и классы, являющиеся полями этих объектов;<br>
- * 3. com.bobisonfire.foodshell.transformer - хранит классы, использующиеся для десериализации;<br>
+ * 1. com.bobisonfire.foodshell - организовывает работу приложения и взаимодействие с внешними ресурсами;<br>
+ * 2. com.bobisonfire.foodshell.entity - классы локаций и персонажей, а также вспомогательные для них;<br>
+ * 3. com.bobisonfire.foodshell.transformer - классы, использующиеся для десериализации;<br>
  * 4. com.bobisonfire.foodshell.commands - организовывает логику исполнения консольных команд;<br>
- * 5. com.bobisonfire.foodshell.exc - хранит пользовательские исключения, использующиеся в
- * <i>FoodShell</i>.
+ * 5. com.bobisonfire.foodshell.exc - хранит пользовательские исключения, использующиеся в <i>FoodShell</i>.
  * @author BobIsOnFire - Nikita Akatyev: Programming Lab6 2019
- * @version 5.2.5
+ * @version 6.1.3
  */
 public class ServerMain {
-//    private static final String PATH_PREFIX = ""; private static final boolean debug = true;
-    private static final String PATH_PREFIX = "/home/s264443/prog/lab6/"; private static final boolean debug = false;
+//    private static final String PATH_PREFIX = ""; static final boolean debug = true;
+    private static final String PATH_PREFIX = "/home/s264443/prog/lab7/"; static final boolean debug = false;
     private static final String ERROR_PATH = PATH_PREFIX + "error.log";
-    private static final FileIOHelper f = new FileIOHelper();
 
-    public static final String VERSION = "5.2.5";
-    public static ServerHelper server;
+    static final String VERSION = "6.1.3";
+    static final boolean mailWorking = false;
 
     public static void main(String[] args) {
         if (debug)
             System.out.println("Running debug version..");
-
-        if (args.length > 0)
-            Human.PATH = args[0];
-        else
-            Human.PATH = PATH_PREFIX + Human.PATH;
-
         try {
             initializeMessage();
-
-            Location.PATH = PATH_PREFIX + Location.PATH;
             Command.createBasicCommands();
-
-            if (!new File(Human.PATH).exists())
-                f.writeCSVSetIntoFile(Collections.singleton(new Human()), Human.PATH);
-
-            if (!new File(Location.PATH).exists())
-                f.writeCSVSetIntoFile(Collections.singleton(new Location()), Location.PATH);
-
-
-            server = new ServerHelper();
+            ServerHelper server = new ServerHelper();
             server.runServer();
         } catch (Exception e) {
             logException(e);
@@ -71,7 +47,7 @@ public class ServerMain {
     /**
      * Сохраняет информацию о возникшей ошибке в лог ошибок (по умолчанию - error.log в папке с лабой).
      */
-    static void logException(Exception exc) {
+    public static void logException(Exception exc) {
         SimpleDateFormat sdf = new SimpleDateFormat("dd.MM.yyyy HH:mm:ss");
         try {
             FileWriter fw = new FileWriter(ERROR_PATH, true);
